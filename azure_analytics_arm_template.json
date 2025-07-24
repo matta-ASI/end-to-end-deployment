@@ -1,0 +1,354 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "projectName": {
+      "type": "string",
+      "defaultValue": "dataanalytics",
+      "metadata": {
+        "description": "Prefix for all resources"
+      }
+    },
+    "location": {
+      "type": "string",
+      "defaultValue": "[resourceGroup().location]",
+      "metadata": {
+        "description": "Location for all resources"
+      }
+    },
+    "administratorLogin": {
+      "type": "string",
+      "defaultValue": "sqladmin",
+      "metadata": {
+        "description": "SQL Server administrator login"
+      }
+    },
+    "administratorLoginPassword": {
+      "type": "securestring",
+      "metadata": {
+        "description": "SQL Server administrator password"
+      }
+    },
+    "sparkPoolNodeCount": {
+      "type": "int",
+      "defaultValue": 3,
+      "minValue": 3,
+      "maxValue": 200,
+      "metadata": {
+        "description": "Number of nodes for Spark pool"
+      }
+    }
+  },
+  "variables": {
+    "storageAccountName": "[concat(parameters('projectName'), 'storage', uniqueString(resourceGroup().id))]",
+    "dataFactoryName": "[concat(parameters('projectName'), '-adf-', uniqueString(resourceGroup().id))]",
+    "synapseWorkspaceName": "[concat(parameters('projectName'), '-synapse-', uniqueString(resourceGroup().id))]",
+    "sqlServerName": "[concat(parameters('projectName'), '-sql-', uniqueString(resourceGroup().id))]",
+    "sqlDatabaseName": "[concat(parameters('projectName'), '-sqldb')]",
+    "keyVaultName": "[concat(parameters('projectName'), '-kv-', uniqueString(resourceGroup().id))]",
+    "applicationInsightsName": "[concat(parameters('projectName'), '-ai-', uniqueString(resourceGroup().id))]",
+    "mlWorkspaceName": "[concat(parameters('projectName'), '-ml-', uniqueString(resourceGroup().id))]",
+    "cosmosDbAccountName": "[concat(parameters('projectName'), '-cosmos-', uniqueString(resourceGroup().id))]",
+    "eventHubNamespaceName": "[concat(parameters('projectName'), '-eventhub-', uniqueString(resourceGroup().id))]",
+    "streamAnalyticsJobName": "[concat(parameters('projectName'), '-asa-', uniqueString(resourceGroup().id))]",
+    "powerBiEmbeddedName": "[concat(parameters('projectName'), '-pbi-', uniqueString(resourceGroup().id))]"
+  },
+  "resources": [
+    {
+      "type": "Microsoft.Storage/storageAccounts",
+      "apiVersion": "2021-09-01",
+      "name": "[variables('storageAccountName')]",
+      "location": "[parameters('location')]",
+      "sku": {
+        "name": "Standard_LRS"
+      },
+      "kind": "StorageV2",
+      "properties": {
+        "isHnsEnabled": true,
+        "supportsHttpsTrafficOnly": true,
+        "encryption": {
+          "services": {
+            "file": {
+              "keyType": "Account",
+              "enabled": true
+            },
+            "blob": {
+              "keyType": "Account",
+              "enabled": true
+            }
+          },
+          "keySource": "Microsoft.Storage"
+        }
+      }
+    },
+    {
+      "type": "Microsoft.Storage/storageAccounts/blobServices/containers",
+      "apiVersion": "2021-09-01",
+      "name": "[concat(variables('storageAccountName'), '/default/raw')]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts', variables('storageAccountName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Storage/storageAccounts/blobServices/containers",
+      "apiVersion": "2021-09-01",
+      "name": "[concat(variables('storageAccountName'), '/default/processed')]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts', variables('storageAccountName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.KeyVault/vaults",
+      "apiVersion": "2021-11-01-preview",
+      "name": "[variables('keyVaultName')]",
+      "location": "[parameters('location')]",
+      "properties": {
+        "sku": {
+          "family": "A",
+          "name": "standard"
+        },
+        "tenantId": "[subscription().tenantId]",
+        "accessPolicies": [],
+        "enabledForDeployment": false,
+        "enabledForDiskEncryption": false,
+        "enabledForTemplateDeployment": false,
+        "enableSoftDelete": true,
+        "softDeleteRetentionInDays": 90,
+        "enableRbacAuthorization": true
+      }
+    },
+    {
+      "type": "Microsoft.Sql/servers",
+      "apiVersion": "2021-11-01",
+      "name": "[variables('sqlServerName')]",
+      "location": "[parameters('location')]",
+      "properties": {
+        "administratorLogin": "[parameters('administratorLogin')]",
+        "administratorLoginPassword": "[parameters('administratorLoginPassword')]",
+        "version": "12.0"
+      }
+    },
+    {
+      "type": "Microsoft.Sql/servers/databases",
+      "apiVersion": "2021-11-01",
+      "name": "[concat(variables('sqlServerName'), '/', variables('sqlDatabaseName'))]",
+      "location": "[parameters('location')]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Sql/servers', variables('sqlServerName'))]"
+      ],
+      "sku": {
+        "name": "S1",
+        "tier": "Standard"
+      },
+      "properties": {
+        "collation": "SQL_Latin1_General_CP1_CI_AS"
+      }
+    },
+    {
+      "type": "Microsoft.Sql/servers/firewallRules",
+      "apiVersion": "2021-11-01",
+      "name": "[concat(variables('sqlServerName'), '/AllowAllAzureServices')]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Sql/servers', variables('sqlServerName'))]"
+      ],
+      "properties": {
+        "startIpAddress": "0.0.0.0",
+        "endIpAddress": "0.0.0.0"
+      }
+    },
+    {
+      "type": "Microsoft.Synapse/workspaces",
+      "apiVersion": "2021-06-01",
+      "name": "[variables('synapseWorkspaceName')]",
+      "location": "[parameters('location')]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts', variables('storageAccountName'))]"
+      ],
+      "identity": {
+        "type": "SystemAssigned"
+      },
+      "properties": {
+        "defaultDataLakeStorage": {
+          "resourceId": "[resourceId('Microsoft.Storage/storageAccounts', variables('storageAccountName'))]",
+          "accountUrl": "[concat('https://', variables('storageAccountName'), '.dfs.core.windows.net')]",
+          "filesystem": "processed"
+        },
+        "sqlAdministratorLogin": "[parameters('administratorLogin')]",
+        "sqlAdministratorLoginPassword": "[parameters('administratorLoginPassword')]"
+      }
+    },
+    {
+      "type": "Microsoft.Synapse/workspaces/bigDataPools",
+      "apiVersion": "2021-06-01",
+      "name": "[concat(variables('synapseWorkspaceName'), '/sparkpool')]",
+      "location": "[parameters('location')]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Synapse/workspaces', variables('synapseWorkspaceName'))]"
+      ],
+      "properties": {
+        "nodeCount": "[parameters('sparkPoolNodeCount')]",
+        "nodeSizeFamily": "MemoryOptimized",
+        "nodeSize": "Medium",
+        "autoScale": {
+          "enabled": true,
+          "minNodeCount": 3,
+          "maxNodeCount": 10
+        },
+        "autoPause": {
+          "enabled": true,
+          "delayInMinutes": 15
+        },
+        "sparkVersion": "3.1"
+      }
+    },
+    {
+      "type": "Microsoft.DataFactory/factories",
+      "apiVersion": "2018-06-01",
+      "name": "[variables('dataFactoryName')]",
+      "location": "[parameters('location')]",
+      "identity": {
+        "type": "SystemAssigned"
+      },
+      "properties": {}
+    },
+    {
+      "type": "Microsoft.DocumentDB/databaseAccounts",
+      "apiVersion": "2021-10-15",
+      "name": "[variables('cosmosDbAccountName')]",
+      "location": "[parameters('location')]",
+      "kind": "GlobalDocumentDB",
+      "properties": {
+        "consistencyPolicy": {
+          "defaultConsistencyLevel": "Session"
+        },
+        "locations": [
+          {
+            "locationName": "[parameters('location')]",
+            "failoverPriority": 0,
+            "isZoneRedundant": false
+          }
+        ],
+        "databaseAccountOfferType": "Standard",
+        "enableAutomaticFailover": false,
+        "capabilities": []
+      }
+    },
+    {
+      "type": "Microsoft.EventHub/namespaces",
+      "apiVersion": "2021-11-01",
+      "name": "[variables('eventHubNamespaceName')]",
+      "location": "[parameters('location')]",
+      "sku": {
+        "name": "Standard",
+        "tier": "Standard",
+        "capacity": 1
+      },
+      "properties": {
+        "isAutoInflateEnabled": false,
+        "maximumThroughputUnits": 0
+      }
+    },
+    {
+      "type": "Microsoft.EventHub/namespaces/eventhubs",
+      "apiVersion": "2021-11-01",
+      "name": "[concat(variables('eventHubNamespaceName'), '/streaming-data')]",
+      "dependsOn": [
+        "[resourceId('Microsoft.EventHub/namespaces', variables('eventHubNamespaceName'))]"
+      ],
+      "properties": {
+        "messageRetentionInDays": 1,
+        "partitionCount": 2
+      }
+    },
+    {
+      "type": "Microsoft.StreamAnalytics/streamingjobs",
+      "apiVersion": "2020-03-01",
+      "name": "[variables('streamAnalyticsJobName')]",
+      "location": "[parameters('location')]",
+      "properties": {
+        "sku": {
+          "name": "Standard"
+        },
+        "outputErrorPolicy": "Stop",
+        "eventsOutOfOrderPolicy": "Adjust",
+        "eventsOutOfOrderMaxDelayInSeconds": 0,
+        "eventsLateArrivalMaxDelayInSeconds": 5,
+        "dataLocale": "en-US",
+        "compatibilityLevel": "1.2"
+      }
+    },
+    {
+      "type": "Microsoft.Insights/components",
+      "apiVersion": "2020-02-02",
+      "name": "[variables('applicationInsightsName')]",
+      "location": "[parameters('location')]",
+      "kind": "web",
+      "properties": {
+        "Application_Type": "web",
+        "Flow_Type": "Redfield",
+        "Request_Source": "IbizaAIExtension"
+      }
+    },
+    {
+      "type": "Microsoft.MachineLearningServices/workspaces",
+      "apiVersion": "2021-07-01",
+      "name": "[variables('mlWorkspaceName')]",
+      "location": "[parameters('location')]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts', variables('storageAccountName'))]",
+        "[resourceId('Microsoft.KeyVault/vaults', variables('keyVaultName'))]",
+        "[resourceId('Microsoft.Insights/components', variables('applicationInsightsName'))]"
+      ],
+      "identity": {
+        "type": "SystemAssigned"
+      },
+      "properties": {
+        "storageAccount": "[resourceId('Microsoft.Storage/storageAccounts', variables('storageAccountName'))]",
+        "keyVault": "[resourceId('Microsoft.KeyVault/vaults', variables('keyVaultName'))]",
+        "applicationInsights": "[resourceId('Microsoft.Insights/components', variables('applicationInsightsName'))]",
+        "friendlyName": "[variables('mlWorkspaceName')]"
+      }
+    },
+    {
+      "type": "Microsoft.PowerBIDedicated/capacities",
+      "apiVersion": "2021-01-01",
+      "name": "[variables('powerBiEmbeddedName')]",
+      "location": "[parameters('location')]",
+      "sku": {
+        "name": "A1",
+        "tier": "PBIE_Azure"
+      },
+      "properties": {
+        "administration": {
+          "members": []
+        }
+      }
+    }
+  ],
+  "outputs": {
+    "storageAccountName": {
+      "type": "string",
+      "value": "[variables('storageAccountName')]"
+    },
+    "dataFactoryName": {
+      "type": "string",
+      "value": "[variables('dataFactoryName')]"
+    },
+    "synapseWorkspaceName": {
+      "type": "string",
+      "value": "[variables('synapseWorkspaceName')]"
+    },
+    "sqlServerName": {
+      "type": "string",
+      "value": "[variables('sqlServerName')]"
+    },
+    "mlWorkspaceName": {
+      "type": "string",
+      "value": "[variables('mlWorkspaceName')]"
+    },
+    "keyVaultName": {
+      "type": "string",
+      "value": "[variables('keyVaultName')]"
+    }
+  }
+}
